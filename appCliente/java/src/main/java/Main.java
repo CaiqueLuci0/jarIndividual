@@ -1,24 +1,31 @@
 import Persistencia.Conexao;
-import com.github.britooo.looca.api.group.janelas.Janela;
-import com.github.britooo.looca.api.util.Conversor;
-import modelo.Processador;
+import Persistencia.ConexaoSQL;
+import Registro.Leitura;
+import Registro.LeituraComputador;
+import log.Log;
+import log.LogLevel;
+import log.LogManager;
+import modelo.LogJar;
+import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import repositorio.ComputadorRepositorio;
-import java.time.LocalDateTime;
+import java.io.IOException;
+import java.time.LocalDate;
 import java.util.*;
 
 import modelo.Computador;
-import repositorio.ProcessadorRepositorio;
+
 
 public class Main {
-    static Scanner leitorStr = new Scanner(System.in);
+
+
     static Conexao conexao = new Conexao();
     static JdbcTemplate conn = conexao.getConn();
-    static ComputadorRepositorio repositorioComputador = new ComputadorRepositorio(conn);
 
+    static ConexaoSQL conexaoSQL = new ConexaoSQL();
+    static JdbcTemplate connSQL = conexaoSQL.getConn();
 
-    public static void main(String[] args) throws InterruptedException {
-
+    public static void main(String[] args) throws InterruptedException, IOException {
         telaInicial();
     }
 
@@ -37,23 +44,49 @@ public class Main {
         System.out.println("""
                 BEM-VINDO(A) AO NOSSO SISTEMA DE MONITORAMENTO DE COMPUTADORES!
                 """);
-        login();
+
+        try{
+            login();
+        } catch(Exception e) {
+            try {
+                System.out.println("Erro no sistema. Entre em contato com o nosso suporte!");
+                LogJar lastLog = conn.queryForObject("SELECT * FROM logJar WHERE dtLog = (SELECT MAX(dtLog) FROM logJar);", new BeanPropertyRowMapper<>(LogJar.class));
+                if (lastLog != null && lastLog.getMensagem().equals(e.getMessage())) {
+                    return;
+                }
+                System.out.println("Cadastrando log...");
+                conn.execute("INSERT INTO logJar (causa, mensagem, stacktrace, dtLog) VALUES (" +
+                        "'" + e.getCause() + "', " +
+                        "'" + e.getMessage() + "', " +
+                        "'" + e + "', " +
+                        "'" + Log.formato.format(new Date()) + "');"
+                );
+            } catch(Exception e2) {
+                System.out.println("Erro no cadastro do log no banco de dados. Inserindo em arquivo .txt");
+                LogManager.salvarLog(new Log(Exception.class, "Foi requisitada a inserção da Exception: \n\n"
+                        + e + "\n\nNo entanto, a mesma gerou outra Exception durante a tentativa de inserção," +
+                        " sendo ela: \n\n" + e2, LogLevel.ERROR));
+            }
+        }
     }
 
 
-    static void login() throws InterruptedException {
+    static void login() throws InterruptedException, IOException {
         System.out.println("Login iniciado! \n");
+
+        ComputadorRepositorio repositorioComputador = new ComputadorRepositorio(conn, connSQL);
 
         List computadorAutenticado;
         do {
-            System.out.println("Código do patrimônio:");
-            String codPatrimonio = leitorStr.next();
+            System.out.println(System.getenv("CODIGO_PATRIMONIO"));
+            String codPatrimonio = System.getenv("CODIGO_PATRIMONIO");
             System.out.println("Senha:");
-            String senhaH = leitorStr.next();
+            String senhaH = System.getenv("SENHA_PC");
+
 
             computadorAutenticado = repositorioComputador.autenticarComputador(senhaH, codPatrimonio);
 
-            if (computadorAutenticado.size() != 1) {
+            if (computadorAutenticado.isEmpty()) {
                 System.out.println("Código do patrimônio ou senha incorreta. \nPor favor, tente novamente. \n");
             }
 
@@ -67,112 +100,15 @@ public class Main {
                 """);
 
         Computador computador = (Computador) computadorAutenticado.get(0);
-        atualizarInformacoes(computador);
         System.out.println(computador);
+
+        Computador computadorLocal = new Computador();
+        Leitura leituraLocal = new LeituraComputador(computadorLocal);
 
         System.out.println("\nAGORA ESTE COMPUTADOR ESTÁ SENDO MONITORADO EM TEMPO REAL.");
 
-        inserirLeituras(computador);
-    }
+        LeituraComputador leitura = new LeituraComputador(computador);
 
-    public static void inserirLeituras(Computador computador) throws InterruptedException {
-
-        for (int i = 1; true; i++) {
-
-            String queryRamCpu = "INSERT INTO leituraRamCpu (ram, cpu, dataLeitura, fkComputador, fkDepartamento, fkHospital) VALUES("
-                    + computador.getPorcentagemConsumoMemoria()
-                    + ", " + computador.getPorcentagemConsumoCpu()
-                    + ", '" + LocalDateTime.now() + "', " + computador.getIdComputador()
-                    + ", " + computador.getFkDepartamento() + ", "
-                    + computador.getFkHospital() + ");";
-
-            System.out.printf("""
-                    COMANDO DE INSERÇÃO DE LEITURAS DE RAM E CPU:
-                    %s \n
-                    """, queryRamCpu);
-            conn.execute(queryRamCpu);
-
-            for (Janela janela : computador.getJanelas()) {
-                String queryFerramenta =
-                        "INSERT INTO leituraFerramenta (nomeApp, dtLeitura, caminho, fkComputador, fkDepartamento, fkHospital) VALUES( '"
-                                + janela.getTitulo() + "', '"
-                                + LocalDateTime.now() + "', '"
-                                + janela.getComando() + "', "
-                                + computador.getIdComputador() + ", "
-                                + computador.getFkDepartamento() + ", "
-                                + computador.getFkHospital() + ");";
-
-                System.out.printf("""
-                        COMANDO DE INSERÇÃO DE LEITURAS DE FERRAMENTAS EM USO: \n
-                        %s \n
-                        """, queryFerramenta);
-                conn.execute(queryFerramenta);
-            }
-
-            if (i > 9) {
-                String queryDisco = "INSERT INTO leituraDisco (disco, dataLeitura, fkComputador, fkDepartamento, fkHospital) VALUES ("
-                        + computador.getDiscoComMaisConsumo(computador.getPorcentagemDeTodosVolumes())
-                        + ", '" + LocalDateTime.now() + "', " + computador.getIdComputador()
-                        + ", " + computador.getFkDepartamento() + ", " + computador.getFkDepartamento() + ");";
-
-                System.out.printf("""
-                        COMANDO DE INSERÇÃO DE LEITURAS DE FERRAMENTAS EM USO: \n
-                        %s \n
-                        """, queryDisco);
-                conn.execute(queryDisco);
-
-                i = 0;
-            }
-
-            Thread.sleep(3000);
-        }
-    }
-
-    public static void atualizarInformacoes (Computador computador) {
-        ProcessadorRepositorio processadorRepositorio = new ProcessadorRepositorio(conn);
-
-        Processador processador = new Processador();
-        processador.setFrequencia(computador.loocaProcessador.getFrequencia());
-        processador.setNome(computador.loocaProcessador.getNome());
-        processador.setCpusFisicas(computador.loocaProcessador.getNumeroCpusFisicas());
-        processador.setIdentificador(computador.loocaProcessador.getIdentificador());
-        processador.setCpusLogicas(computador.loocaProcessador.getNumeroCpusLogicas());
-        processador.setMicroarquitetura(computador.loocaProcessador.getMicroarquitetura());
-        processador.setPacotesFisicos(computador.loocaProcessador.getNumeroPacotesFisicos());
-
-        if (
-                computador.getProcessador().getFrequencia() != processador.getFrequencia()                  ||
-                computador.getProcessador().getNome().equals(processador.getNome())                         ||
-                computador.getProcessador().getCpusFisicas() != processador.getCpusFisicas()                ||
-                computador.getProcessador().getIdentificador().equals(processador.getNome())                ||
-                computador.getProcessador().getCpusLogicas() != processador.getCpusLogicas()                ||
-                computador.getProcessador().getMicroarquitetura().equals(processador.getMicroarquitetura()) ||
-                computador.getProcessador().getPacotesFisicos() != processador.getPacotesFisicos()
-        ) {
-            Processador processadorAntigo = computador.getProcessador();
-            //UPDATE PROCESSADOR
-            computador.setProcessador(processadorRepositorio.updateProcessador(processador));
-            repositorioComputador.updateProcessador(computador);
-            //DELETAR ANTIGO PROCESSADOR NO BANCO SE NÃO ESTIVER EM USO
-            if (processadorAntigo.getIdProcessador() != 0) {
-                processadorRepositorio.deleteSemUso(processadorAntigo.getIdProcessador());
-            }
-        }
-
-        if (
-                !computador.getMaxDisco().equals(computador.getMaiorDisco())                           ||
-                !Conversor.formatarBytes(computador.memoria.getTotal()).equals(computador.getMaxRam()) ||
-                !computador.getSistemaOperacional().equals(computador.sistema.getSistemaOperacional())
-        ) {
-            computador.setMaxRam(Conversor.formatarBytes(computador.memoria.getTotal()));
-            computador.setSistemaOperacional(computador.sistema.getSistemaOperacional());
-            computador.setMaxDisco(computador.getMaiorDisco());
-            repositorioComputador.uptadeHardware(computador);
-        }
-
-        if (!computador.getTempoDeAtividade().equals(Conversor.formatarSegundosDecorridos(computador.sistema.getTempoDeAtividade()))) {
-            computador.setTempoDeAtividade(Conversor.formatarSegundosDecorridos(computador.sistema.getTempoDeAtividade()));
-            repositorioComputador.updateTempoAtividade(computador);
-        }
-    }
+        leitura.inserirLeitura();
+    } 
 }

@@ -146,6 +146,8 @@ UPDATE computador SET tempoDeAtividade = '9 days' WHERE idComputador = 1;
 
 select * from computador;
 
+select * from computador join processador on fkProcessador = idProcessador;
+
 CREATE USER 'usuario'@'localhost' IDENTIFIED BY 'usuario';
 GRANT insert, update, delete, select ON medtech.* to 'usuario'@'localhost';
 FLUSH PRIVILEGES;
